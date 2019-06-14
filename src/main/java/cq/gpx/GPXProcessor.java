@@ -29,6 +29,9 @@ import cq.gpx.xmlobjects.Waypoint;
 import cq.gpx.xmlobjects.XMLObject;
 
 public class GPXProcessor {
+	private static double MAX_DIFF = 20.0d;
+	private static double MIN_DIST = 80.0d;
+	
 	private String infile;
 	private String outfile;
 	private String routeName;
@@ -278,28 +281,29 @@ public class GPXProcessor {
 				r.setCoordinates(hand.getPointFrom());
 				checkWithWaypoints(r, waypoints, seqno);
 				prevHand = hand;
-				firstHand = hand;
+				lastHand = hand;
 				retval.add(r);
 				continue;
 			}
+			HeadingAndDistance totalHand = GPXUtils.calculateHeadingAndDistance(prevHand.getPointFrom(), lastHand.getPointTo());
 			dist += hand.getDistance();
-			double diff = hand.getHeading() - prevHand.getHeading();
-			if (diff < -340.0d) {
+			double diff = hand.getHeading() - totalHand.getHeading();
+			if (diff < (MAX_DIFF - 360.0d)) {
 				diff += 360.0d;
-			} else if (diff > 340.00d) {
+			} else if (diff > (360.0d - MAX_DIFF)) {
 				diff -= 360.0d;
 			}
 			if (diff < 0.0d) {
 				diff *= -1;
 			}
-			if (diff > 20.0d && hand.getDistance() > 80.0d) {
+			if (diff > MAX_DIFF && totalHand.getDistance() >= MIN_DIST) {
 				seqno++;
 				Routepoint r = new Routepoint();
 				r.setCoordinates(lastHand.getPointTo());
 				checkWithWaypoints(r, waypoints, seqno);
 				r.setCoordinates(hand.getPointFrom());
 				retval.add(r);
-				firstHand = hand;
+				prevHand = hand;
 				dist = 0.0d;
 			}
 			
@@ -375,10 +379,11 @@ public class GPXProcessor {
 		}
 	}
 	
-	private void routepointsOverview(List<Routepoint> routepoints) {
+	private double routepointsOverview(List<Routepoint> routepoints) {
 		System.out.println("\nRoutepoint overview:");
 		Routepoint prevRpt = null;
 		int seqno = 0;
+		double totalDistance = 0.0d;
 		for (Routepoint rpt : routepoints) {
 			seqno++;
 			System.out.print(format(seqno, 3, ' ') + ". lat=" + format(rpt.getLat(), 5) + " lon=" + format(rpt.getLon(), 5));
@@ -403,9 +408,12 @@ public class GPXProcessor {
 				comment = new GenericXMLObject("cmt");
 				prevRpt.addSubObject(comment);
 			}
+			totalDistance += hand.getDistance();
 			comment.setValue("Heading=" + format(hand.getHeading(), 3, '0') + " deg, Distance=" + format(hand.getDistance(), 4,  '0') + " m");
 			prevRpt = rpt;
 		}
+		System.out.println("Total distance: " + format(totalDistance, 4, '0') + " m");
+		return totalDistance;
 	}
 	
 	private String format(int n, int len, char pad) {
