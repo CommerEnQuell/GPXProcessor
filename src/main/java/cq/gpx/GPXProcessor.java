@@ -1,6 +1,5 @@
 package cq.gpx;
 
-import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -9,15 +8,12 @@ import java.io.FileWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
-import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import javax.swing.text.html.HTMLDocument.HTMLReader.FormAction;
 
 import cq.gpx.utils.GPXUtils;
 import cq.gpx.xmlobjects.Bounds;
@@ -34,6 +30,8 @@ public class GPXProcessor {
 	
 	private String infile;
 	private String outfile;
+
+	@SuppressWarnings("unused")
 	private String routeName;
 	private String header = null;
 	
@@ -69,6 +67,7 @@ public class GPXProcessor {
 		List<Routepoint> route = processRoute(hands, waypoints);
 		routepointsOverview(route);
 		route = reprocessRoute(route);
+		checkWithWaypoints(route, waypoints);
 		routepointsOverview(route);
 		writeOutfile(waypoints, route);
 	}
@@ -180,7 +179,7 @@ public class GPXProcessor {
 			String searchStr = "/" + xmlTag + ">";
 			endTag = xml.indexOf(searchStr, offset) + searchStr.length();
 			String subXml = xml.substring(offset, endTag);
-			XMLObject subObject = processXMLObject(subXml, retval);
+			processXMLObject(subXml, retval);
 			offset = xml.indexOf("<", endTag);
 		}
 		
@@ -270,23 +269,20 @@ public class GPXProcessor {
 	private List<Routepoint> processRoute(List<HeadingAndDistance> hands, List<Waypoint> waypoints) {
 		List<Routepoint> retval = new ArrayList<Routepoint>();
 		HeadingAndDistance prevHand = null;
-		HeadingAndDistance firstHand = null;
 		HeadingAndDistance lastHand = null;
 		int seqno = 0;
-		double dist = 0.0d;
 		for (HeadingAndDistance hand : hands) {
 			if (prevHand == null) {
 				seqno++;
 				Routepoint r = new Routepoint();
 				r.setCoordinates(hand.getPointFrom());
-				checkWithWaypoints(r, waypoints, seqno);
+				addSubObjects(r, seqno);
 				prevHand = hand;
 				lastHand = hand;
 				retval.add(r);
 				continue;
 			}
 			HeadingAndDistance totalHand = GPXUtils.calculateHeadingAndDistance(prevHand.getPointFrom(), lastHand.getPointTo());
-			dist += hand.getDistance();
 			double diff = hand.getHeading() - totalHand.getHeading();
 			if (diff < (MAX_DIFF - 360.0d)) {
 				diff += 360.0d;
@@ -300,11 +296,10 @@ public class GPXProcessor {
 				seqno++;
 				Routepoint r = new Routepoint();
 				r.setCoordinates(lastHand.getPointTo());
-				checkWithWaypoints(r, waypoints, seqno);
+				addSubObjects(r, seqno);
 				r.setCoordinates(hand.getPointFrom());
 				retval.add(r);
 				prevHand = hand;
-				dist = 0.0d;
 			}
 			
 			lastHand = hand;
@@ -312,7 +307,7 @@ public class GPXProcessor {
 		seqno++;
 		Routepoint r = new Routepoint();
 		r.setCoordinates(lastHand.getPointTo());
-		checkWithWaypoints(r, waypoints, seqno);
+		addSubObjects(r, seqno);
 
 		retval.add(r);
 		
@@ -449,26 +444,8 @@ public class GPXProcessor {
 		return format(n, len, pad);
 	}
 	
-	private void checkWithWaypoints(Routepoint r, List<Waypoint> waypoints, int seqno) {
+	private void addSubObjects(Routepoint r, int seqno) {
 		String name = GPXUtils.formatInteger(seqno, 3);
-		boolean match = false;
-		for (Waypoint w : waypoints) {
-			Coordinates coordR = new Coordinates(r.getLat(), r.getLon());
-			Coordinates coordW = new Coordinates(w.getLat(), w.getLon());
-			HeadingAndDistance hand = GPXUtils.calculateHeadingAndDistance(coordR, coordW);
-			if (hand.getDistance() < 50.0d) {
-				for (XMLObject subObject : w.getSubObjects()) {
-					if ("name".equals(subObject.getXmlTag()) && subObject.getValue() != null) {
-						name = name + ". " + subObject.getValue();
-						break;
-					}
-				}
-				match = true;
-			}
-			if (match) {
-				break;
-			}
-		}
 		XMLObject theName = new GenericXMLObject("name");
 		theName.setValue(name);
 		r.addSubObject(theName);
@@ -476,10 +453,63 @@ public class GPXProcessor {
 		r.addSubObject(new GenericXMLObject("desc"));
 	}
 	
+	private void checkWithWaypoints(List<Routepoint> route, List<Waypoint> waypoints) {
+		Map<Waypoint, Routepoint> pointMapping = new HashMap<Waypoint, Routepoint>();
+		Map<Waypoint, Routepoint> runnersUp = new HashMap<Waypoint, Routepoint>();
+		for (Routepoint rpt : route) {
+			Coordinates coordR = new Coordinates(rpt.getLat(), rpt.getLon());
+			for (Waypoint wpt : waypoints) {
+				if (!pointMapping.containsKey(wpt)) {
+					pointMapping.put(wpt, rpt);
+					continue;
+				}
+				Coordinates coordW = new Coordinates(wpt.getLat(), wpt.getLon());
+				HeadingAndDistance hand = GPXUtils.calculateHeadingAndDistance(coordR, coordW);
+				double dist = hand.getDistance();
+				Routepoint prevRpt = pointMapping.get(wpt);
+				Coordinates coordPrevR = new Coordinates(prevRpt.getLat(), prevRpt.getLon());
+				HeadingAndDistance prevHand = GPXUtils.calculateHeadingAndDistance(coordPrevR, coordW);
+				if (dist < prevHand.getDistance()) {
+					runnersUp.put(wpt, prevRpt);
+					pointMapping.put(wpt, rpt);
+				}
+			}
+		}
+		List<Routepoint> namedRpts = new ArrayList<Routepoint>();
+		for (Map.Entry<Waypoint, Routepoint> me : pointMapping.entrySet()) {
+			Waypoint wpt = me.getKey();
+			Routepoint rpt = me.getValue();
+			if (namedRpts.contains(rpt)) {
+				rpt = runnersUp.get(wpt);
+			}
+			XMLObject xmlName = null;
+			for (XMLObject o : rpt.getSubObjects()) {
+				if ("name".equals(o.getXmlTag())) {
+					xmlName = o;
+					break;
+				}
+			}
+			String name = xmlName.getValue();
+			for (XMLObject subObject : wpt.getSubObjects()) {
+				if ("name".equals(subObject.getXmlTag()) && subObject.getValue() != null) {
+					String s = (subObject.getValue() != null ? subObject.getValue() : "");
+					if (s.trim().endsWith(" (Fietsknooppunt)")) {
+						int idx = s.indexOf(" (Fietsknooppunt)");
+						s = "K" + s.substring(0, idx);
+					}
+					name = name + ". " + s;
+					break;
+				}
+			}
+			xmlName.setValue(name);
+			namedRpts.add(rpt);
+		}
+	}
+	
 	private void writeOutfile(List<Waypoint> waypoints, List<Routepoint> routepoints) throws Exception {
 		GPX outRoot = new GPX();
 		outRoot.setCreator("Commer &amp; Quell");
-		outRoot.setVersion("1.1");
+		outRoot.setVersion("1.2");
 		outRoot.setXmlns("http://www.topografix.com/GPX/1/1");
 		outRoot.setXmlns_xsi("http://www.w3.org/2001/XMLSchema-instance");
 		outRoot.setXsi_schemaLocation("http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd http://www.topografix.com/GPX/gpx_overlay/0/3 http://www.topografix.com/GPX/gpx_overlay/0/3/gpx_overlay.xsd");
@@ -539,7 +569,6 @@ public class GPXProcessor {
 	}
 	
 	private void addMetadata(GPX gpx, List<Waypoint> waypoints, List<Routepoint> routepoints) {
-		Timestamp now = new Timestamp(System.currentTimeMillis());
 		StringBuffer buf = new StringBuffer();
 		GregorianCalendar calendar = new GregorianCalendar();
 		calendar.setTimeInMillis(System.currentTimeMillis());
